@@ -1,6 +1,3 @@
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
-# %%
 import os, sys, random
 from pathlib import Path
 from functools import partial
@@ -18,10 +15,6 @@ from hugdatafast import *
 from _utils.utils import *
 from _utils.would_like_to_pr import *
 
-# %% [markdown]
-# # 1. Configuraton
-
-# %%
 c = MyConfig({
     'device': 'cuda:0',
     
@@ -43,25 +36,7 @@ c = MyConfig({
     'my_model': False, # only for my personal research
 })
 
-# only for my personal research
-hparam_update = {
-    
-}
 
-""" Vanilla ELECTRA settings
-'adam_bias_correction': False,
-'schedule': 'original_linear',
-'sampling': 'fp32_gumbel',
-'electra_mask_style': True,
-'gen_smooth_label': False,
-'disc_smooth_label': False,
-'size': 'small',
-'datas': ['openwebtext'],
-"""
-
-
-# %%
-# Check and Default
 assert c.sampling in ['fp32_gumbel', 'fp16_gumbel', 'multinomial']
 assert c.schedule in ['original_linear', 'separate_linear', 'one_cycle', 'adjusted_one_cycle']
 for data in c.datas: assert data in ['wikipedia', 'bookcorpus', 'openwebtext']
@@ -109,7 +84,6 @@ print(c)
 print(hparam_update)
 
 
-# %%
 if c.my_model: # only for use of my personal research 
   sys.path.insert(0, os.path.abspath(".."))
   from modeling.model import ModelForGenerator,ModelForDiscriminator
@@ -119,30 +93,32 @@ if c.my_model: # only for use of my personal research
   disc_hparam = electra_hparam_from_hf(disc_config, hf_tokenizer)
   disc_hparam.update(hparam_update)
 
-# %% [markdown]
-# # 1. Load Data
 
-# %%
 dsets = []
 ELECTRAProcessor = partial(ELECTRADataProcessor, hf_tokenizer=hf_tokenizer, max_length=c.max_length)
 
-# Wikipedia
-if 'wikipedia' in c.datas:
-  print('load/download wiki dataset')
-  wiki = datasets.load_dataset('wikipedia', '20200501.en', cache_dir='./datasets')['train']
-  print('load/create data from wiki dataset for ELECTRA')
-  e_wiki = ELECTRAProcessor(wiki).map(cache_file_name=f"electra_wiki_{c.max_length}.arrow", num_proc=1)
-  dsets.append(e_wiki)
+# # Wikipedia
+# if 'wikipedia' in c.datas:
+#   print('load/download wiki dataset')
+#   wiki = datasets.load_dataset('wikipedia', '20200501.en', cache_dir='./datasets')['train']
+#   print('load/create data from wiki dataset for ELECTRA')
+#   e_wiki = ELECTRAProcessor(wiki).map(cache_file_name=f"electra_wiki_{c.max_length}.arrow", num_proc=1)
+#   dsets.append(e_wiki)
 
-# OpenWebText
-if 'openwebtext' in c.datas:
-  print('load/download OpenWebText Corpus')
-  owt = datasets.load_dataset('openwebtext', cache_dir='./datasets')['train']
-  print('load/create data from OpenWebText Corpus for ELECTRA')
+# # OpenWebText
+# if 'openwebtext' in c.datas:
+#   print('load/download OpenWebText Corpus')
+#   owt = datasets.load_dataset('openwebtext', cache_dir='./datasets')['train']
+#   print('load/create data from OpenWebText Corpus for ELECTRA')
+#   e_owt = ELECTRAProcessor(owt, apply_cleaning=False).map(cache_file_name=f"electra_owt_{c.max_length}.arrow", num_proc=1)
+#   dsets.append(e_owt)
+
+for lang in ['en']:
+  owt = datasets.load_dataset("statmt/cc100", lang)['train']
   e_owt = ELECTRAProcessor(owt, apply_cleaning=False).map(cache_file_name=f"electra_owt_{c.max_length}.arrow", num_proc=1)
   dsets.append(e_owt)
 
-assert len(dsets) == len(c.datas)
+# assert len(dsets) == len(c.datas)
 
 merged_dsets = {'train': datasets.concatenate_datasets(dsets)}
 hf_dsets = HF_Datasets(merged_dsets, cols={'input_ids':TensorText,'sentA_length':noop},
@@ -152,12 +128,7 @@ dls = hf_dsets.dataloaders(bs=c.bs, num_workers=c.num_workers, pin_memory=False,
                            srtkey_fc=False, 
                            cache_dir='./datasets/electra_dataloader', cache_name='dl_{split}.json')
 
-# %% [markdown]
-# # 2. Masked language model objective
-# %% [markdown]
-# ## 2.1 MLM objective callback
 
-# %%
 """
 Modified from HuggingFace/transformers (https://github.com/huggingface/transformers/blob/0a3d0e02c5af20bfe9091038c4fd11fb79175546/src/transformers/data/data_collator.py#L102). 
 It is a little bit faster cuz 
@@ -243,7 +214,6 @@ class MaskedLMCallback(Callback):
     dl.show_batch(b=tfm_b, **kwargs)
 
 
-# %%
 mlm_cb = MaskedLMCallback(mask_tok_id=hf_tokenizer.mask_token_id, 
                           special_tok_ids=hf_tokenizer.all_special_ids, 
                           vocab_size=hf_tokenizer.vocab_size,
@@ -251,13 +221,8 @@ mlm_cb = MaskedLMCallback(mask_tok_id=hf_tokenizer.mask_token_id,
                           replace_prob=0.0 if c.electra_mask_style else 0.1, 
                           orginal_prob=0.15 if c.electra_mask_style else 0.1,
                           for_electra=True)
-#mlm_cb.show_batch(dls[0], idx_show_ignored=hf_tokenizer.convert_tokens_to_ids(['#'])[0])
 
-# %% [markdown]
-# # 3. ELECTRA (replaced token detection objective)
-# see details in paper [ELECTRA: Pre-training Text Encoders as Discriminators Rather Than Generators](https://arxiv.org/abs/2003.10555)
 
-# %%
 class ELECTRAModel(nn.Module):
   
   def __init__(self, generator, discriminator, hf_tokenizer):
@@ -343,10 +308,7 @@ class ELECTRALoss():
     disc_loss = self.disc_loss_fc(disc_logits.float(), is_replaced.float())
     return gen_loss * self.loss_weights[0] + disc_loss * self.loss_weights[1]
 
-# %% [markdown]
-# # 5. Train
 
-# %%
 # Seed & PyTorch benchmark
 torch.backends.cudnn.benchmark = True
 dls[0].rng = random.Random(c.seed) # for fastai dataloader
